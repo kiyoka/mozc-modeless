@@ -49,6 +49,10 @@
   :type 'key-sequence
   :group 'mozc-modeless)
 
+(defvar mozc-modeless-skip-chars "a-zA-Z0-9.,@:`\\-+!\\[\\]?;' \t"
+  "Characters to be included in the preceding string for conversion.
+Same specification as sumibi.el.")
+
 ;;; Internal variables
 
 (defvar mozc-modeless--active nil
@@ -72,8 +76,8 @@ Returns a cons cell (START . STRING) where START is the beginning
 position of the romaji string, or nil if no romaji is found."
   (save-excursion
     (let ((end (point)))
-      ;; Skip backward over romaji characters
-      (skip-chars-backward "a-zA-Z")
+      ;; Skip backward over characters defined in mozc-modeless-skip-chars
+      (skip-chars-backward mozc-modeless-skip-chars)
       (when (< (point) end)
         (cons (point) (buffer-substring-no-properties (point) end))))))
 
@@ -97,7 +101,8 @@ This function is bound to `mozc-modeless-convert-key' (default: C-j)."
                 mozc-modeless--start-pos start
                 mozc-modeless--original-string roman-string
                 ;; Skip checking for a few commands to let mozc initialize
-                mozc-modeless--skip-check-count (length roman-string))
+                ;; +1 for the space key that triggers conversion
+                mozc-modeless--skip-check-count (1+ (length roman-string)))
           ;; Delete the romaji string
           (delete-region start (point))
           ;; Activate mozc input method
@@ -105,8 +110,8 @@ This function is bound to `mozc-modeless-convert-key' (default: C-j)."
             (activate-input-method "japanese-mozc"))
           ;; Set up hook to detect conversion completion
           (add-hook 'post-command-hook #'mozc-modeless--check-finish nil t)
-          ;; Insert the romaji string through mozc
-          (mozc-modeless--insert-string roman-string))))))
+          ;; Insert the romaji string through mozc, followed by space to convert
+          (mozc-modeless--insert-string (concat roman-string " ")))))))
 
 (defun mozc-modeless--insert-string (str)
   "Insert string STR through Mozc input method.
