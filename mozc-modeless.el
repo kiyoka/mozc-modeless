@@ -49,9 +49,9 @@
   :type 'key-sequence
   :group 'mozc-modeless)
 
-(defvar mozc-modeless-skip-chars "a-zA-Z0-9.,@:`\\-+!\\[\\]?;' \t"
+(defvar mozc-modeless-skip-chars "a-zA-Z0-9.,@:`\\-+!/\\[\\]?;' \t"
   "Characters to be included in the preceding string for conversion.
-Same specification as sumibi.el.")
+Includes slash (/) as a delimiter for partial conversion.")
 
 ;;; Internal variables
 
@@ -86,7 +86,9 @@ position of the romaji string, or nil if no romaji is found."
 (defun mozc-modeless-convert ()
   "Convert the preceding romaji string to Japanese using Mozc.
 This function is bound to `mozc-modeless-convert-key' (default: C-j).
-When already in conversion mode, switch to the next candidate."
+When already in conversion mode, switch to the next candidate.
+If the string contains a slash (/), only the part after the last slash
+is sent to mozc, and the slash is deleted."
   (interactive)
   (if mozc-modeless--active
       ;; Already in conversion mode, send space to get next candidate
@@ -95,24 +97,36 @@ When already in conversion mode, switch to the next candidate."
     (let ((roman-data (mozc-modeless--get-preceding-roman)))
       (if (not roman-data)
           (message "No romaji found before cursor")
-        (let ((start (car roman-data))
-              (roman-string (cdr roman-data)))
-          ;; Save state
-          (setq mozc-modeless--active t
-                mozc-modeless--start-pos start
-                mozc-modeless--original-string roman-string
-                ;; Skip checking for a few commands to let mozc initialize
-                ;; +1 for the space key that triggers conversion
-                mozc-modeless--skip-check-count (1+ (length roman-string)))
-          ;; Delete the romaji string
-          (delete-region start (point))
-          ;; Activate mozc input method
-          (unless current-input-method
-            (activate-input-method "japanese-mozc"))
-          ;; Set up hook to detect conversion completion
-          (add-hook 'post-command-hook #'mozc-modeless--check-finish nil t)
-          ;; Insert the romaji string through mozc, followed by space to convert
-          (mozc-modeless--insert-string (concat roman-string " ")))))))
+        (let* ((start (car roman-data))
+               (full-string (cdr roman-data))
+               (slash-pos (string-match-p "/[^/]*$" full-string))
+               (roman-string (if slash-pos
+                                 (substring full-string (1+ slash-pos))
+                               full-string))
+               (delete-start (if slash-pos
+                                 (+ start slash-pos)
+                               start)))
+          ;; Check if there's actually something to convert after the slash
+          (if (string-empty-p roman-string)
+              (message "No romaji found after slash")
+            ;; Save state
+            (setq mozc-modeless--active t
+                  mozc-modeless--start-pos delete-start
+                  mozc-modeless--original-string (if slash-pos
+                                                     (substring full-string slash-pos)
+                                                   full-string)
+                  ;; Skip checking for a few commands to let mozc initialize
+                  ;; +1 for the space key that triggers conversion
+                  mozc-modeless--skip-check-count (1+ (length roman-string)))
+            ;; Delete the romaji string (including slash if present)
+            (delete-region delete-start (+ start (length full-string)))
+            ;; Activate mozc input method
+            (unless current-input-method
+              (activate-input-method "japanese-mozc"))
+            ;; Set up hook to detect conversion completion
+            (add-hook 'post-command-hook #'mozc-modeless--check-finish nil t)
+            ;; Insert the romaji string through mozc, followed by space to convert
+            (mozc-modeless--insert-string (concat roman-string " "))))))))
 
 (defun mozc-modeless--insert-string (str)
   "Insert string STR through Mozc input method.
