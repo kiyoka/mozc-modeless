@@ -85,11 +85,12 @@ position of the romaji string, or nil if no romaji is found."
 
 (defun mozc-modeless-convert ()
   "Convert the preceding romaji string to Japanese using Mozc.
-This function is bound to `mozc-modeless-convert-key' (default: C-j)."
+This function is bound to `mozc-modeless-convert-key' (default: C-j).
+When already in conversion mode, switch to the next candidate."
   (interactive)
   (if mozc-modeless--active
-      ;; Already in conversion mode, do nothing (let mozc handle it)
-      nil
+      ;; Already in conversion mode, send space to get next candidate
+      (setq unread-command-events (cons ?\s unread-command-events))
     ;; Start conversion
     (let ((roman-data (mozc-modeless--get-preceding-roman)))
       (if (not roman-data)
@@ -197,6 +198,25 @@ Use this if the mode gets stuck in an inconsistent state."
     map)
   "Keymap for `mozc-modeless-mode'.")
 
+(defvar mozc-modeless--original-mozc-keymap-entry nil
+  "Original C-j binding in mozc-mode-map, saved for restoration.")
+
+(defun mozc-modeless--setup-mozc-keymap ()
+  "Set up C-j binding in mozc-mode-map for next candidate selection."
+  (when (boundp 'mozc-mode-map)
+    ;; Save original binding
+    (setq mozc-modeless--original-mozc-keymap-entry
+          (lookup-key mozc-mode-map (kbd "C-j")))
+    ;; Set our binding
+    (define-key mozc-mode-map (kbd "C-j") 'mozc-modeless-convert)))
+
+(defun mozc-modeless--restore-mozc-keymap ()
+  "Restore original C-j binding in mozc-mode-map."
+  (when (boundp 'mozc-mode-map)
+    (if mozc-modeless--original-mozc-keymap-entry
+        (define-key mozc-mode-map (kbd "C-j") mozc-modeless--original-mozc-keymap-entry)
+      (define-key mozc-mode-map (kbd "C-j") nil))))
+
 ;;;###autoload
 (define-minor-mode mozc-modeless-mode
   "Toggle modeless Japanese input with Mozc.
@@ -214,8 +234,11 @@ Key bindings:
       (progn
         ;; Enable mode
         (unless (fboundp 'mozc-mode)
-          (error "Mozc is not available. Please install mozc.el")))
+          (error "Mozc is not available. Please install mozc.el"))
+        ;; Set up C-j in mozc-mode-map
+        (mozc-modeless--setup-mozc-keymap))
     ;; Disable mode
+    (mozc-modeless--restore-mozc-keymap)
     (when mozc-modeless--active
       (mozc-modeless--finish))))
 
