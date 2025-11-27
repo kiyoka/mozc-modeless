@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(agent-lisp-paren-aid-linux:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
