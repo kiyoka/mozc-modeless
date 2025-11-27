@@ -44,16 +44,14 @@
   :group 'mozc
   :prefix "mozc-modeless-")
 
-(defcustom mozc-modeless-roman-regexp "[a-zA-Z]+"
-  "Regular expression to match romaji characters.
-This is used to detect the preceding romaji string before conversion."
-  :type 'regexp
-  :group 'mozc-modeless)
-
 (defcustom mozc-modeless-convert-key (kbd "C-j")
   "Key sequence to trigger conversion."
   :type 'key-sequence
   :group 'mozc-modeless)
+
+(defvar mozc-modeless-skip-chars "a-zA-Z0-9.,@:`\\-+!\\[\\]?;' \t"
+  "Characters to be included in the preceding string for conversion.
+Same specification as sumibi.el.")
 
 ;;; Internal variables
 
@@ -67,6 +65,9 @@ This is used to detect the preceding romaji string before conversion."
   "Original romaji string before conversion.
 This is used to restore the text when conversion is cancelled.")
 
+(defvar mozc-modeless--skip-check-count 0
+  "Number of post-command-hook calls to skip before checking finish.")
+
 ;;; Utility functions
 
 (defun mozc-modeless--get-preceding-roman ()
@@ -75,9 +76,10 @@ Returns a cons cell (START . STRING) where START is the beginning
 position of the romaji string, or nil if no romaji is found."
   (save-excursion
     (let ((end (point)))
-      (when (and (> end (line-beginning-position))
-                 (looking-back mozc-modeless-roman-regexp (line-beginning-position) t))
-        (cons (match-beginning 0) (match-string 0))))))
+      ;; Skip backward over characters defined in mozc-modeless-skip-chars
+      (skip-chars-backward mozc-modeless-skip-chars)
+      (when (< (point) end)
+        (cons (point) (buffer-substring-no-properties (point) end))))))
 
 ;;; Main functions
 
@@ -86,8 +88,8 @@ position of the romaji string, or nil if no romaji is found."
 This function is bound to `mozc-modeless-convert-key' (default: C-j)."
   (interactive)
   (if mozc-modeless--active
-      ;; Already in conversion mode, pass through to mozc
-      (call-interactively 'mozc-handle-event)
+      ;; Already in conversion mode, do nothing (let mozc handle it)
+      nil
     ;; Start conversion
     (let ((roman-data (mozc-modeless--get-preceding-roman)))
       (if (not roman-data)
@@ -97,28 +99,41 @@ This function is bound to `mozc-modeless-convert-key' (default: C-j)."
           ;; Save state
           (setq mozc-modeless--active t
                 mozc-modeless--start-pos start
-                mozc-modeless--original-string roman-string)
+                mozc-modeless--original-string roman-string
+                ;; Skip checking for a few commands to let mozc initialize
+                ;; +1 for the space key that triggers conversion
+                mozc-modeless--skip-check-count (1+ (length roman-string)))
           ;; Delete the romaji string
           (delete-region start (point))
           ;; Activate mozc input method
           (unless current-input-method
             (activate-input-method "japanese-mozc"))
-          ;; Insert the romaji string through mozc
-          (mozc-modeless--insert-string roman-string)
-          ;; Set up hooks to detect conversion completion
-          (add-hook 'mozc-handle-event-after-insert-hook
-                    'mozc-modeless--check-finish nil t))))))
+          ;; Set up hook to detect conversion completion
+          (add-hook 'post-command-hook #'mozc-modeless--check-finish nil t)
+          ;; Insert the romaji string through mozc, followed by space to convert
+          (mozc-modeless--insert-string (concat roman-string " ")))))))
 
 (defun mozc-modeless--insert-string (str)
-  "Insert string STR through Mozc input method."
-  (dolist (char (string-to-list str))
-    (mozc-handle-event (list 'self-insert-command char))))
+  "Insert string STR through Mozc input method.
+Queue characters to be processed by the active input method."
+  (setq unread-command-events
+        (append (listify-key-sequence str) unread-command-events)))
+
+(defun mozc-modeless--preedit-active-p ()
+  "Return non-nil if mozc has an active preedit session."
+  (or (bound-and-true-p mozc-preedit-in-session-flag)
+      (bound-and-true-p mozc-preedit-overlay)))
 
 (defun mozc-modeless--check-finish ()
-  "Check if conversion is finished and clean up if necessary."
-  (when (and mozc-modeless--active
-             (not (mozc-in-conversion-p)))
-    (mozc-modeless--finish)))
+  "Check if conversion is finished and clean up if necessary.
+This is called from `post-command-hook'."
+  (when mozc-modeless--active
+    (if (> mozc-modeless--skip-check-count 0)
+        ;; Still processing initial romaji input
+        (setq mozc-modeless--skip-check-count (1- mozc-modeless--skip-check-count))
+      ;; Check if mozc is no longer in preedit/conversion state
+      (unless (mozc-modeless--preedit-active-p)
+        (mozc-modeless--finish)))))
 
 (defun mozc-modeless--finish ()
   "Finish conversion mode and return to normal mode."
@@ -129,24 +144,49 @@ This function is bound to `mozc-modeless-convert-key' (default: C-j)."
     ;; Clean up state
     (setq mozc-modeless--active nil
           mozc-modeless--start-pos nil
-          mozc-modeless--original-string nil)
+          mozc-modeless--original-string nil
+          mozc-modeless--skip-check-count 0)
     ;; Remove hooks
-    (remove-hook 'mozc-handle-event-after-insert-hook
-                 'mozc-modeless--check-finish t)))
+    (remove-hook 'post-command-hook #'mozc-modeless--check-finish t)))
 
 (defun mozc-modeless-cancel ()
   "Cancel the current conversion and restore the original romaji string."
   (interactive)
-  (when mozc-modeless--active
-    ;; Cancel mozc conversion
-    (when (mozc-in-conversion-p)
-      (mozc-cancel))
+  (if (not mozc-modeless--active)
+      ;; Not in conversion mode, pass through to default C-g behavior
+      (keyboard-quit)
+    ;; Cancel mozc conversion by deactivating input method
+    (when (string= current-input-method "japanese-mozc")
+      (deactivate-input-method))
+    ;; Delete any preedit text that mozc may have inserted
+    (when (bound-and-true-p mozc-preedit-overlay)
+      (delete-overlay mozc-preedit-overlay))
+    ;; Clear preedit flag if it exists
+    (when (boundp 'mozc-preedit-in-session-flag)
+      (setq mozc-preedit-in-session-flag nil))
     ;; Restore original string
     (when (and mozc-modeless--start-pos mozc-modeless--original-string)
       (goto-char mozc-modeless--start-pos)
       (insert mozc-modeless--original-string))
-    ;; Clean up
-    (mozc-modeless--finish)))
+    ;; Clean up state
+    (setq mozc-modeless--active nil
+          mozc-modeless--start-pos nil
+          mozc-modeless--original-string nil
+          mozc-modeless--skip-check-count 0)
+    (remove-hook 'post-command-hook #'mozc-modeless--check-finish t)))
+
+(defun mozc-modeless-reset ()
+  "Reset mozc-modeless state.
+Use this if the mode gets stuck in an inconsistent state."
+  (interactive)
+  (when (string= current-input-method "japanese-mozc")
+    (deactivate-input-method))
+  (setq mozc-modeless--active nil
+        mozc-modeless--start-pos nil
+        mozc-modeless--original-string nil
+        mozc-modeless--skip-check-count 0)
+  (remove-hook 'post-command-hook #'mozc-modeless--check-finish t)
+  (message "mozc-modeless state reset"))
 
 ;;; Minor mode definition
 
@@ -174,11 +214,16 @@ Key bindings:
       (progn
         ;; Enable mode
         (unless (fboundp 'mozc-mode)
-          (error "Mozc is not available. Please install mozc.el"))
-        (message "mozc-modeless-mode enabled. Press C-j to convert romaji."))
+          (error "Mozc is not available. Please install mozc.el")))
     ;; Disable mode
     (when mozc-modeless--active
       (mozc-modeless--finish))))
+
+;;;###autoload
+(define-globalized-minor-mode global-mozc-modeless-mode
+  mozc-modeless-mode
+  (lambda () (mozc-modeless-mode 1))
+  :group 'mozc-modeless)
 
 (provide 'mozc-modeless)
 ;;; mozc-modeless.el ends here
