@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(agent-lisp-paren-aid-linux:*)"
+      "Bash(agent-lisp-paren-aid-linux:*)",
+      "WebFetch(domain:www.gnu.org)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(mv:*)"
     ],
     "deny": [],
     "ask": []
