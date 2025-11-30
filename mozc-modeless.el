@@ -2,10 +2,10 @@
 
 ;; Copyright (C) 2025
 
-;; Author:
+;; Author: Kiyoka Nishiyama
 ;; Keywords: i18n, extentions
-;; Version: 0.1.0
-;; Package-Requires: ((emacs "24.4") (mozc "0"))
+;; Version: 0.3.0
+;; Package-Requires: ((emacs "29.0") (mozc "0"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
