@@ -89,6 +89,14 @@ position of the romaji string, or nil if no romaji is found."
 
 ;;; Main functions
 
+(defun mozc-modeless--reset-state ()
+  "Reset all internal state variables and remove hooks."
+  (setq mozc-modeless--active nil
+        mozc-modeless--start-pos nil
+        mozc-modeless--original-string nil
+        mozc-modeless--skip-check-count 0)
+  (remove-hook 'post-command-hook #'mozc-modeless--check-finish t))
+
 (defun mozc-modeless-convert ()
   "Convert the preceding romaji string to Japanese using Mozc.
 This function is bound to `mozc-modeless-convert-key' (default: C-j).
@@ -166,12 +174,7 @@ This is called from `post-command-hook'."
     (when (string= current-input-method "japanese-mozc")
       (deactivate-input-method))
     ;; Clean up state
-    (setq mozc-modeless--active nil
-          mozc-modeless--start-pos nil
-          mozc-modeless--original-string nil
-          mozc-modeless--skip-check-count 0)
-    ;; Remove hooks
-    (remove-hook 'post-command-hook #'mozc-modeless--check-finish t)))
+    (mozc-modeless--reset-state)))
 
 (defun mozc-modeless-cancel ()
   "Cancel the current conversion and restore the original romaji string."
@@ -191,11 +194,7 @@ This is called from `post-command-hook'."
       (goto-char mozc-modeless--start-pos)
       (insert mozc-modeless--original-string))
     ;; Clean up state
-    (setq mozc-modeless--active nil
-          mozc-modeless--start-pos nil
-          mozc-modeless--original-string nil
-          mozc-modeless--skip-check-count 0)
-    (remove-hook 'post-command-hook #'mozc-modeless--check-finish t)))
+    (mozc-modeless--reset-state)))
 
 (defun mozc-modeless-reset ()
   "Reset mozc-modeless state.
@@ -203,11 +202,7 @@ Use this if the mode gets stuck in an inconsistent state."
   (interactive)
   (when (string= current-input-method "japanese-mozc")
     (deactivate-input-method))
-  (setq mozc-modeless--active nil
-        mozc-modeless--start-pos nil
-        mozc-modeless--original-string nil
-        mozc-modeless--skip-check-count 0)
-  (remove-hook 'post-command-hook #'mozc-modeless--check-finish t)
+  (mozc-modeless--reset-state)
   (message "mozc-modeless state reset"))
 
 ;;; Minor mode definition
