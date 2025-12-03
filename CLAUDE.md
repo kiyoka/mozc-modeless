@@ -278,3 +278,53 @@ mozc.elの内部APIが使えない場合、以下の代替アプローチが考�
 2. 必要に応じてAPIの使い方を修正
 3. 実際の動作テストと調整
 4. エッジケースの処理追加（複数行、特殊文字など）
+
+### GitHub Issue #5 対応: markdown-mode でのmarkdown構文除外
+
+#### 問題の概要
+
+markdown-modeで使用時、markdownの構文記号（リスト記号、見出し記号など）が変換対象に含まれてしまう問題がありました。
+
+**具体例:**
+```
+入力: "- aitemu" + C-j
+現在の結果: "ーアイテム"  ← リスト記号"-"が長音符"ー"に変換されてしまう
+期待する結果: "- アイテム"  ← リスト記号"-"は変換せず、"aitemu"だけを変換
+```
+
+#### 実装内容 (2025-12-03)
+
+`mozc-modeless--get-preceding-roman` 関数を修正して、markdown-mode時にmarkdown構文を認識し、変換対象から除外するようにしました。
+
+**主な変更点:**
+
+1. **markdown-modeの検出**
+   - `derived-mode-p` を使ってmarkdown-modeかどうかをチェック
+
+2. **markdown構文の認識**
+   - リスト記号: markdown-modeの `markdown-regex-list` を使用して `-`, `*`, `+`, `1.` などを認識
+   - 見出し記号: 正規表現 `^[ \t]*\\(#+\\)[ \t]+` で `#`, `##` などを認識
+
+3. **変換範囲の調整**
+   - markdown構文が検出された場合、その後の位置から変換対象の検索を開始
+   - これにより、markdown構文自体は変換対象から除外される
+
+4. **依存関係の追加**
+   - Package-Requires に `(markdown-mode "2.0")` を追加
+
+**修正ファイル:**
+- `mozc-modeless.el:79-105` - `mozc-modeless--get-preceding-roman` 関数
+- `mozc-modeless.el:8` - Package-Requires
+
+**動作例:**
+```
+入力: "- aitemu" + C-j
+結果: "- アイテム"
+
+入力: "## midashi" + C-j
+結果: "## 見出し"
+```
+
+**参考資料:**
+- [markdown-mode公式ドキュメント](https://jblevins.org/projects/markdown-mode/)
+- [markdown-mode GitHub リポジトリ](https://github.com/jrblevin/markdown-mode)

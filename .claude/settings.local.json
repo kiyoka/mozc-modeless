@@ -5,7 +5,11 @@
       "WebFetch(domain:www.gnu.org)",
       "Bash(curl:*)",
       "Bash(wget:*)",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "Bash(gh issue view:*)",
+      "Bash(git remote:*)",
+      "WebFetch(domain:github.com)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []

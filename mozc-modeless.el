@@ -5,7 +5,7 @@
 ;; Author: Kiyoka Nishiyama
 ;; Keywords: i18n, extentions
 ;; Version: 0.3.0
-;; Package-Requires: ((emacs "29.0") (mozc "0"))
+;; Package-Requires: ((emacs "29.0") (mozc "0") (markdown-mode "2.0"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -79,11 +79,28 @@ This is used to restore the text when conversion is cancelled.")
 (defun mozc-modeless--get-preceding-roman ()
   "Get the preceding romaji string before the cursor.
 Returns a cons cell (START . STRING) where START is the beginning
-position of the romaji string, or nil if no romaji is found."
+position of the romaji string, or nil if no romaji is found.
+In markdown-mode, markdown syntax (list markers, headings) at the
+beginning of the line are excluded from the conversion target."
   (save-excursion
-    (let ((end (point)))
+    (let* ((end (point))
+           (line-start (line-beginning-position))
+           (search-start line-start))
+      ;; In markdown-mode, skip markdown syntax at the beginning of the line
+      (when (and (derived-mode-p 'markdown-mode)
+                 (boundp 'markdown-regex-list))
+        (save-excursion
+          (goto-char line-start)
+          ;; Check for list markers (-, *, +, 1., etc.)
+          (when (looking-at markdown-regex-list)
+            (setq search-start (match-end 0)))
+          ;; Check for ATX headings (#, ##, etc.)
+          (goto-char line-start)
+          (when (looking-at "^[ \t]*\\(#+\\)[ \t]+")
+            (setq search-start (max search-start (match-end 0))))))
       ;; Skip backward over characters defined in mozc-modeless-skip-chars
-      (skip-chars-backward mozc-modeless-skip-chars)
+      (goto-char end)
+      (skip-chars-backward mozc-modeless-skip-chars search-start)
       (when (< (point) end)
         (cons (point) (buffer-substring-no-properties (point) end))))))
 
