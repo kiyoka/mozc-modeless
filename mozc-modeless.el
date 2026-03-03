@@ -68,6 +68,13 @@ automatically triggers Mozc conversion."
   :type '(repeat string)
   :group 'mozc-modeless)
 
+(defcustom mozc-modeless-ambient-punctuation-auto-confirm t
+  "Non-nil means punctuation-triggered conversion auto-confirms with the first candidate.
+When nil, punctuation-triggered conversion leaves Mozc in conversion state,
+allowing the user to select candidates before confirming."
+  :type 'boolean
+  :group 'mozc-modeless)
+
 (defcustom mozc-modeless-ambient-english-threshold 0.8
   "Threshold for English text detection.
 If the ratio of English words in the preceding text is greater than
@@ -98,6 +105,10 @@ This is used to restore the text when conversion is cancelled.")
 
 (defvar mozc-modeless--skip-check-count 0
   "Number of post-command-hook calls to skip before checking finish.")
+
+(defvar mozc-modeless--ambient-punctuation-pending nil
+  "Punctuation character to insert after conversion confirmation.
+Set by ambient conversion in interactive mode.")
 
 (defvar mozc-modeless--converting-map
   (let ((map (make-sparse-keymap)))
@@ -167,7 +178,8 @@ is also recognized using built-in regex patterns."
   (setq mozc-modeless--active nil
         mozc-modeless--start-pos nil
         mozc-modeless--original-string nil
-        mozc-modeless--skip-check-count 0)
+        mozc-modeless--skip-check-count 0
+        mozc-modeless--ambient-punctuation-pending nil)
   (remove-hook 'post-command-hook #'mozc-modeless--check-finish t))
 
 (defun mozc-modeless--deactivate-ime ()
@@ -259,10 +271,14 @@ This is called from `post-command-hook'."
 (defun mozc-modeless--finish ()
   "Finish conversion mode and return to normal mode."
   (when mozc-modeless--active
-    ;; Deactivate mozc input method
-    (mozc-modeless--deactivate-ime)
-    ;; Clean up state
-    (mozc-modeless--reset-state)))
+    (let ((pending-punct mozc-modeless--ambient-punctuation-pending))
+      ;; Deactivate mozc input method
+      (mozc-modeless--deactivate-ime)
+      ;; Clean up state
+      (mozc-modeless--reset-state)
+      ;; Insert pending punctuation from ambient conversion
+      (when pending-punct
+        (insert (mozc-modeless--to-fullwidth-punctuation pending-punct))))))
 
 (defun mozc-modeless-cancel ()
   "Cancel the current conversion and restore the original romaji string."
@@ -419,35 +435,54 @@ This function is added to `post-self-insert-hook'."
                 (mozc-modeless--ambient-convert roman-data punct-char))))))))))
 
 (defun mozc-modeless--ambient-convert (romaji-info punct-char)
-  "Perform ambient conversion on ROMAJI-INFO with auto-confirm.
+  "Perform ambient conversion on ROMAJI-INFO.
 ROMAJI-INFO is (START . STRING) from `mozc-modeless--get-preceding-roman'.
-PUNCT-CHAR is the punctuation character that triggered conversion, or nil for space trigger."
+PUNCT-CHAR is the punctuation character that triggered conversion, or nil for space trigger.
+When PUNCT-CHAR is non-nil and `mozc-modeless-ambient-punctuation-auto-confirm' is nil,
+the conversion stays in Mozc candidate selection mode (like C-j)."
   (let* ((start (car romaji-info))
          (roman-string (cdr romaji-info))
-         (skip-count (1+ (length roman-string))))
+         (skip-count (1+ (length roman-string)))
+         (auto-confirm (or (null punct-char)
+                           mozc-modeless-ambient-punctuation-auto-confirm)))
     ;; Delete the romaji from the buffer
     (delete-region start (point))
-    ;; Set flag to prevent re-triggering
-    (setq mozc-modeless--ambient-in-progress t)
-    ;; Activate mozc input method
-    (unless current-input-method
-      (activate-input-method "japanese-mozc"))
-    ;; Set up hook to detect conversion completion and clean up
-    (let ((cleanup-count skip-count))
-      (letrec ((ambient-finish
-                (lambda ()
-                  (if (> cleanup-count 0)
-                      (setq cleanup-count (1- cleanup-count))
-                    (unless (mozc-modeless--preedit-active-p)
-                      (mozc-modeless--deactivate-ime)
-                      ;; Insert punctuation if this was a punctuation trigger
-                      (when punct-char
-                        (insert (mozc-modeless--to-fullwidth-punctuation punct-char)))
-                      (setq mozc-modeless--ambient-in-progress nil)
-                      (remove-hook 'post-command-hook ambient-finish t))))))
-        (add-hook 'post-command-hook ambient-finish nil t)))
-    ;; Send romaji + space (to trigger conversion) + Enter (to confirm first candidate)
-    (mozc-modeless--insert-string (concat roman-string " \r"))))
+    (if auto-confirm
+        ;; Auto-confirm mode: convert and confirm immediately
+        (progn
+          (setq mozc-modeless--ambient-in-progress t)
+          (unless current-input-method
+            (activate-input-method "japanese-mozc"))
+          ;; Set up hook to detect conversion completion and clean up
+          (let ((cleanup-count skip-count))
+            (letrec ((ambient-finish
+                      (lambda ()
+                        (if (> cleanup-count 0)
+                            (setq cleanup-count (1- cleanup-count))
+                          (unless (mozc-modeless--preedit-active-p)
+                            (mozc-modeless--deactivate-ime)
+                            (when punct-char
+                              (insert (mozc-modeless--to-fullwidth-punctuation punct-char)))
+                            (setq mozc-modeless--ambient-in-progress nil)
+                            (remove-hook 'post-command-hook ambient-finish t))))))
+              (add-hook 'post-command-hook ambient-finish nil t)))
+          ;; Send romaji + space + Enter (auto-confirm first candidate)
+          (mozc-modeless--insert-string (concat roman-string " \r")))
+      ;; Interactive mode: enter conversion state like C-j, let user select candidates
+      ;; Include punctuation in the string sent to mozc so it appears in conversion
+      (let ((input-string (concat roman-string (char-to-string punct-char))))
+        (setq mozc-modeless--active t
+              mozc-modeless--start-pos start
+              mozc-modeless--original-string roman-string
+              ;; +1 for punctuation, +1 for space
+              mozc-modeless--skip-check-count (+ (length roman-string) 2))
+        (unless current-input-method
+          (activate-input-method "japanese-mozc"))
+        (add-hook 'post-command-hook #'mozc-modeless--check-finish nil t)
+        (set-transient-map mozc-modeless--converting-map
+                           (lambda () mozc-modeless--active))
+        ;; Send romaji + punctuation + space (trigger conversion, no auto-confirm)
+        (mozc-modeless--insert-string (concat input-string " "))))))
 
 (defun mozc-modeless--to-fullwidth-punctuation (char)
   "Convert ASCII punctuation CHAR to its fullwidth Japanese equivalent."
