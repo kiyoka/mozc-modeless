@@ -564,3 +564,95 @@ Ctrl+B: 前の文節に移動（mozc-modeless側で左矢印を送信）
 - mozcサーバー側のCtrl+Nは、確定動作など特別な意味を持つ
 - Ctrl+Pを押した後にCtrl+Nを押すと確定してしまう問題があった
 - mozc-modeless側でCtrl+Nを下矢印キーに変換することで、この問題を回避
+
+### GitHub Issue #20 対応: アンビエント変換（自動変換）
+
+#### 問題の概要
+
+従来、日本語変換はC-jの明示的な押下でのみ開始されていました。Sumibiのアンビエント変換を参考に、助詞＋スペースや句読点入力をトリガーに自動的にmozc変換を実行する機能を追加しました。変換はmozcの第1候補で自動確定し、タイピングの流れを中断しません。
+
+**要望:**
+- 助詞（「wa」「ga」「ni」等）の後にスペースを入力すると自動変換
+- 句読点（`.` `,` `?`）の入力で自動変換＋全角句読点挿入
+- 英文入力時はスキップ（誤変換防止）
+- デフォルトは無効（ユーザーが明示的に有効化）
+
+#### 実装内容 (2026-03-03)
+
+**新規ファイル: `mozc-modeless-english-words.el`**
+
+Sumibiの`sumibi-english-words.el`（SCOWL辞書ベース、Public Domain）をコピー・リネームして作成。
+
+- `mozc-modeless--english-words-hash`: 約3,679語の英単語ハッシュテーブル（3〜10文字）
+- `mozc-modeless--english-word-p`: 英単語判定関数（O(1)ハッシュテーブル検索）
+- ソース: SCOWL (Spell Checker Oriented Word Lists) Version 2020.12.07
+
+**修正ファイル: `mozc-modeless.el` (v0.6.0 → v0.7.0)**
+
+1. **カスタマイズ変数（5つ追加）** (mozc-modeless.el:53-81)
+   - `mozc-modeless-ambient-enable` (default: `nil`) — アンビエント変換の有効/無効
+   - `mozc-modeless-ambient-particles` — 助詞リスト: `("wa" "ha" "ga" "wo" "ni" "de" "to" "kara" "made" "he" "mo" "no" "ya" "desu")`
+   - `mozc-modeless-ambient-punctuation` — 句読点リスト: `("." "," "?")`
+   - `mozc-modeless-ambient-english-threshold` (default: 0.8) — 英文判定閾値
+   - `mozc-modeless-ambient-exclude-modes` — 除外モードリスト: `(shell-mode term-mode eshell-mode)`
+
+2. **英文検出機能** (mozc-modeless.el:320-348)
+   - `mozc-modeless--short-english-words`: 短い英単語リスト（"I", "a", "is"等27語）
+   - `mozc-modeless--normalize-word`: 末尾句読点の除去
+   - `mozc-modeless--english-text-p`: メイン判定関数
+     - テキストを空白で分割
+     - 各単語を辞書・短単語リスト・固有名詞（大文字始まり）で判定
+     - 英単語率 >= 80% なら英文と判定してスキップ
+
+3. **助詞・句読点トリガー** (mozc-modeless.el:382-415)
+   - `mozc-modeless--check-ambient-trigger`: `post-self-insert-hook`に登録
+     - スペース入力時: 直前テキストが助詞で終わるか判定
+     - 句読点入力時: 直前にローマ字があるか判定
+     - 英文検出で80%以上ならスキップ
+     - 除外モード・ミニバッファ・変換中はスキップ
+   - `mozc-modeless--ends-with-particle-p`: 助詞末尾検出（孤立した助詞はスキップ）
+   - `mozc-modeless--ambient-excluded-p`: 除外条件判定
+
+4. **自動変換・自動確定** (mozc-modeless.el:417-446)
+   - `mozc-modeless--ambient-convert`: アンビエント変換実行
+     - ローマ字を削除し、mozc input-methodを有効化
+     - ローマ字＋スペース＋Enter（自動確定）を`unread-command-events`に送信
+     - `post-command-hook`でpreedit消失を検知してクリーンアップ
+     - 句読点トリガーの場合、確定後に全角句読点を挿入
+   - `mozc-modeless--to-fullwidth-punctuation`: 句読点の全角変換（`.`→`。`, `,`→`、`, `?`→`？`）
+
+5. **フック管理** (mozc-modeless.el:496-509)
+   - `mozc-modeless-mode`の有効化時に`post-self-insert-hook`に`mozc-modeless--check-ambient-trigger`を追加
+   - 無効化時にフックを削除
+
+**既存の`mozc-modeless-convert`（C-j）との違い:**
+- transient-keymapを設定しない（候補選択UIなし）
+- `mozc-modeless--active`をセットしない（C-gキャンセル不要）
+- 自動確定のためEnterキーイベントを追加送信
+- `mozc-modeless--ambient-in-progress`フラグで再帰トリガーを防止
+
+**動作例:**
+```
+;; 有効化
+(setq mozc-modeless-ambient-enable t)
+
+;; 助詞＋スペーストリガー
+入力: "nihonga " (スペース入力)
+結果: "日本が"  ← 自動変換＋自動確定
+
+;; 句読点トリガー
+入力: "wakarimashita."
+結果: "わかりました。" ← 自動変換＋全角句読点
+
+;; 英文はスキップ
+入力: "I will not create a pull request "
+結果: "I will not create a pull request " ← そのまま（英文80%以上）
+
+;; shell-modeでは無効
+shell-mode: コマンド入力中にアンビエント変換は発動しない
+```
+
+**依存関係の追加:**
+- `mozc-modeless-english-words.el`を`require`で読み込み (mozc-modeless.el:39)
+
+コミットしてください。

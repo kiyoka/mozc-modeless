@@ -4,7 +4,7 @@
 
 ;; Author: Kiyoka Nishiyama
 ;; Keywords: i18n, extentions
-;; Version: 0.6.0
+;; Version: 0.7.0
 ;; Package-Requires: ((emacs "29.0") (mozc "0") (markdown-mode "2.0"))
 
 ;; This program is free software; you can redistribute it and/or modify
@@ -36,6 +36,7 @@
 ;;; Code:
 
 (require 'mozc)
+(require 'mozc-modeless-english-words)
 
 ;;; Customization
 
@@ -47,6 +48,36 @@
 (defcustom mozc-modeless-convert-key (kbd "C-j")
   "Key sequence to trigger conversion."
   :type 'key-sequence
+  :group 'mozc-modeless)
+
+(defcustom mozc-modeless-ambient-enable nil
+  "Non-nil to enable ambient (automatic) conversion.
+When enabled, typing a particle followed by space or punctuation
+automatically triggers Mozc conversion."
+  :type 'boolean
+  :group 'mozc-modeless)
+
+(defcustom mozc-modeless-ambient-particles
+  '("wa" "ha" "ga" "wo" "ni" "de" "to" "kara" "made" "he" "mo" "no" "ya" "desu")
+  "List of romaji particles that trigger ambient conversion when followed by space."
+  :type '(repeat string)
+  :group 'mozc-modeless)
+
+(defcustom mozc-modeless-ambient-punctuation '("." "," "?")
+  "List of punctuation characters that trigger ambient conversion."
+  :type '(repeat string)
+  :group 'mozc-modeless)
+
+(defcustom mozc-modeless-ambient-english-threshold 0.8
+  "Threshold for English text detection.
+If the ratio of English words in the preceding text is greater than
+or equal to this value, ambient conversion is skipped."
+  :type 'float
+  :group 'mozc-modeless)
+
+(defcustom mozc-modeless-ambient-exclude-modes '(shell-mode term-mode eshell-mode)
+  "List of major modes where ambient conversion is disabled."
+  :type '(repeat symbol)
   :group 'mozc-modeless)
 
 (defvar mozc-modeless-skip-chars "a-zA-Z0-9.,@:`\\-+!/\\[\\]?;' \t"
@@ -284,6 +315,144 @@ Use this if the mode gets stuck in an inconsistent state."
   (mozc-modeless--reset-state)
   (message "mozc-modeless state reset"))
 
+;;; Ambient conversion
+
+(defvar mozc-modeless--short-english-words
+  '("I" "a" "an" "am" "as" "at" "be" "by" "do" "go" "he" "if" "in"
+    "is" "it" "me" "my" "no" "of" "on" "or" "so" "to" "up" "us" "we")
+  "List of common short English words (1-2 letters) not in the dictionary.")
+
+(defun mozc-modeless--normalize-word (word)
+  "Remove trailing punctuation from WORD for dictionary lookup."
+  (replace-regexp-in-string "[.,?!;:]+$" "" word))
+
+(defun mozc-modeless--english-text-p (text)
+  "Return non-nil if TEXT appears to be English text.
+Splits TEXT by whitespace, checks each word against the English
+dictionary and short word list.  If the ratio of English words
+is >= `mozc-modeless-ambient-english-threshold', return non-nil."
+  (let* ((words (split-string text "[ \t]+" t))
+         (total (length words))
+         (english-count 0))
+    (when (> total 0)
+      (dolist (raw-word words)
+        (let ((word (mozc-modeless--normalize-word raw-word)))
+          (when (or (mozc-modeless--english-word-p word)
+                    (member word mozc-modeless--short-english-words)
+                    ;; Capitalized word (likely proper noun)
+                    (and (> (length word) 0)
+                         (let ((first-char (aref word 0)))
+                           (and (>= first-char ?A) (<= first-char ?Z)))))
+            (setq english-count (1+ english-count)))))
+      (>= (/ (float english-count) total)
+          mozc-modeless-ambient-english-threshold))))
+
+(defun mozc-modeless--ambient-excluded-p ()
+  "Return non-nil if ambient conversion should be skipped in the current context."
+  (or mozc-modeless--active
+      (minibufferp)
+      (apply #'derived-mode-p mozc-modeless-ambient-exclude-modes)))
+
+(defun mozc-modeless--get-preceding-text-on-line ()
+  "Return the text from the beginning of the line to the cursor.
+Leading indentation is excluded."
+  (save-excursion
+    (let ((end (point)))
+      (goto-char (line-beginning-position))
+      (skip-chars-forward " \t")
+      (buffer-substring-no-properties (point) end))))
+
+(defun mozc-modeless--ends-with-particle-p (text)
+  "Return the particle string if TEXT ends with a romaji particle, nil otherwise.
+Only matches when the particle is preceded by another romaji character
+so isolated particles are not triggered."
+  (let ((result nil))
+    (dolist (particle mozc-modeless-ambient-particles result)
+      (when (and (>= (length text) (1+ (length particle)))
+                 (string-suffix-p particle text)
+                 ;; The character before the particle must be a letter
+                 (let ((preceding-char (aref text (- (length text) (length particle) 1))))
+                   (or (and (>= preceding-char ?a) (<= preceding-char ?z))
+                       (and (>= preceding-char ?A) (<= preceding-char ?Z)))))
+        (setq result particle)))))
+
+(defvar mozc-modeless--ambient-in-progress nil
+  "Non-nil when ambient conversion is in progress.")
+
+(defun mozc-modeless--check-ambient-trigger ()
+  "Check if the last inserted character should trigger ambient conversion.
+This function is added to `post-self-insert-hook'."
+  (when (and mozc-modeless-ambient-enable
+             (not mozc-modeless--active)
+             (not mozc-modeless--ambient-in-progress)
+             (not (mozc-modeless--ambient-excluded-p)))
+    (let ((last-char (char-before)))
+      (cond
+       ;; Space trigger: check if preceding text ends with a particle
+       ((eq last-char ?\s)
+        (let* ((text-before-space
+                (save-excursion
+                  (backward-char 1)
+                  (mozc-modeless--get-preceding-text-on-line)))
+               (particle (mozc-modeless--ends-with-particle-p text-before-space)))
+          (when (and particle
+                     (not (mozc-modeless--english-text-p text-before-space)))
+            ;; Delete the space we just typed
+            (delete-char -1)
+            ;; Get romaji info and trigger ambient conversion
+            (let ((roman-data (mozc-modeless--get-preceding-roman)))
+              (when roman-data
+                (mozc-modeless--ambient-convert roman-data nil))))))
+       ;; Punctuation trigger
+       ((member (char-to-string last-char) mozc-modeless-ambient-punctuation)
+        (let ((punct-char last-char))
+          ;; Delete the punctuation we just typed
+          (delete-char -1)
+          (let* ((text-on-line (mozc-modeless--get-preceding-text-on-line))
+                 (roman-data (mozc-modeless--get-preceding-roman)))
+            (when (and roman-data
+                       (not (mozc-modeless--english-text-p text-on-line)))
+              (mozc-modeless--ambient-convert roman-data punct-char)))))))))
+
+(defun mozc-modeless--ambient-convert (romaji-info punct-char)
+  "Perform ambient conversion on ROMAJI-INFO with auto-confirm.
+ROMAJI-INFO is (START . STRING) from `mozc-modeless--get-preceding-roman'.
+PUNCT-CHAR is the punctuation character that triggered conversion, or nil for space trigger."
+  (let* ((start (car romaji-info))
+         (roman-string (cdr romaji-info))
+         (skip-count (1+ (length roman-string))))
+    ;; Delete the romaji from the buffer
+    (delete-region start (point))
+    ;; Set flag to prevent re-triggering
+    (setq mozc-modeless--ambient-in-progress t)
+    ;; Activate mozc input method
+    (unless current-input-method
+      (activate-input-method "japanese-mozc"))
+    ;; Set up hook to detect conversion completion and clean up
+    (let ((cleanup-count skip-count))
+      (letrec ((ambient-finish
+                (lambda ()
+                  (if (> cleanup-count 0)
+                      (setq cleanup-count (1- cleanup-count))
+                    (unless (mozc-modeless--preedit-active-p)
+                      (mozc-modeless--deactivate-ime)
+                      ;; Insert punctuation if this was a punctuation trigger
+                      (when punct-char
+                        (insert (mozc-modeless--to-fullwidth-punctuation punct-char)))
+                      (setq mozc-modeless--ambient-in-progress nil)
+                      (remove-hook 'post-command-hook ambient-finish t))))))
+        (add-hook 'post-command-hook ambient-finish nil t)))
+    ;; Send romaji + space (to trigger conversion) + Enter (to confirm first candidate)
+    (mozc-modeless--insert-string (concat roman-string " \r"))))
+
+(defun mozc-modeless--to-fullwidth-punctuation (char)
+  "Convert ASCII punctuation CHAR to its fullwidth Japanese equivalent."
+  (pcase char
+    (?. "。")
+    (?, "、")
+    (?? "？")
+    (_ (char-to-string char))))
+
 ;;; Minor mode definition
 
 (defvar mozc-modeless-mode-map
@@ -330,9 +499,12 @@ Key bindings:
         (unless (fboundp 'mozc-mode)
           (error "Mozc is not available. Please install mozc.el"))
         ;; Set up convert key in mozc-mode-map
-        (mozc-modeless--setup-mozc-keymap))
+        (mozc-modeless--setup-mozc-keymap)
+        ;; Set up ambient conversion hook
+        (add-hook 'post-self-insert-hook #'mozc-modeless--check-ambient-trigger nil t))
     ;; Disable mode
     (mozc-modeless--restore-mozc-keymap)
+    (remove-hook 'post-self-insert-hook #'mozc-modeless--check-ambient-trigger t)
     (when mozc-modeless--active
       (mozc-modeless--finish))))
 
