@@ -10,7 +10,8 @@
       "Bash(git remote:*)",
       "WebFetch(domain:github.com)",
       "WebSearch",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(~/bin/agent-lisp-paren-aid:*)"
     ],
     "deny": [],
     "ask": []
