@@ -421,18 +421,23 @@ This function is added to `post-self-insert-hook'."
                 (mozc-modeless--ambient-convert roman-data nil))))))
        ;; Punctuation trigger
        ((member (char-to-string last-char) mozc-modeless-ambient-punctuation)
-        (let ((punct-char last-char))
-          ;; Check conditions before deleting punctuation
-          (save-excursion
-            (backward-char 1)
-            (let* ((text-on-line (mozc-modeless--get-preceding-text-on-line))
-                   (roman-data (mozc-modeless--get-preceding-roman)))
-              (when (and roman-data
-                         (not (mozc-modeless--english-text-p text-on-line)))
-                ;; Conditions met: delete punctuation and convert
-                (forward-char 1)
-                (delete-char -1)
-                (mozc-modeless--ambient-convert roman-data punct-char))))))))))
+        (let ((punct-char last-char)
+              (char-before-punct (char-before (1- (point)))))
+          ;; Skip if preceding character is a digit (e.g., "0.1" decimals, "$1,000" amounts)
+          (unless (and char-before-punct
+                       (>= char-before-punct ?0)
+                       (<= char-before-punct ?9))
+            ;; Check conditions before deleting punctuation
+            (save-excursion
+              (backward-char 1)
+              (let* ((text-on-line (mozc-modeless--get-preceding-text-on-line))
+                     (roman-data (mozc-modeless--get-preceding-roman)))
+                (when (and roman-data
+                           (not (mozc-modeless--english-text-p text-on-line)))
+                  ;; Conditions met: delete punctuation and convert
+                  (forward-char 1)
+                  (delete-char -1)
+                  (mozc-modeless--ambient-convert roman-data punct-char)))))))))))
 
 (defun mozc-modeless--ambient-convert (romaji-info punct-char)
   "Perform ambient conversion on ROMAJI-INFO.
