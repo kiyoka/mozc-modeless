@@ -171,6 +171,26 @@ is also recognized using built-in regex patterns."
       (when (< (point) end)
         (cons (point) (buffer-substring-no-properties (point) end))))))
 
+(defun mozc-modeless--apply-fence (roman-data)
+  "Apply fence (slash) processing to ROMAN-DATA.
+ROMAN-DATA is (START . STRING) from `mozc-modeless--get-preceding-roman'.
+If the string contains a slash, return a new cons cell with only the part
+after the last slash.  The start position is adjusted accordingly, and the
+slash itself is deleted from the buffer.
+Returns nil if nothing remains after the slash."
+  (let* ((start (car roman-data))
+         (full-string (cdr roman-data))
+         (slash-pos (string-match-p "/[^/]*$" full-string)))
+    (if slash-pos
+        (let* ((roman-string (substring full-string (1+ slash-pos)))
+               (delete-start (+ start slash-pos)))
+          (if (string-empty-p roman-string)
+              nil
+            ;; Delete the slash from the buffer
+            (delete-region delete-start (1+ delete-start))
+            (cons delete-start roman-string)))
+      roman-data)))
+
 ;;; Main functions
 
 (defun mozc-modeless--reset-state ()
@@ -212,29 +232,21 @@ the expression instead of converting."
     (let ((roman-data (mozc-modeless--get-preceding-roman)))
       (if (not roman-data)
           (message "No romaji found before cursor")
-        (let* ((start (car roman-data))
-               (full-string (cdr roman-data))
-               (slash-pos (string-match-p "/[^/]*$" full-string))
-               (roman-string (if slash-pos
-                                 (substring full-string (1+ slash-pos))
-                               full-string))
-               (delete-start (if slash-pos
-                                 (+ start slash-pos)
-                               start)))
-          ;; Check if there's actually something to convert after the slash
-          (if (string-empty-p roman-string)
-              (message "No romaji found after slash")
+        ;; Apply fence (slash) processing
+        (setq roman-data (mozc-modeless--apply-fence roman-data))
+        (if (not roman-data)
+            (message "No romaji found after slash")
+          (let* ((start (car roman-data))
+                 (roman-string (cdr roman-data)))
             ;; Save state
             (setq mozc-modeless--active t
-                  mozc-modeless--start-pos delete-start
-                  mozc-modeless--original-string (if slash-pos
-                                                     (substring full-string slash-pos)
-                                                   full-string)
+                  mozc-modeless--start-pos start
+                  mozc-modeless--original-string roman-string
                   ;; Skip checking for a few commands to let mozc initialize
                   ;; +1 for the space key that triggers conversion
                   mozc-modeless--skip-check-count (1+ (length roman-string)))
-            ;; Delete the romaji string (including slash if present)
-            (delete-region delete-start (+ start (length full-string)))
+            ;; Delete the romaji string
+            (delete-region start (+ start (length roman-string)))
             ;; Activate mozc input method
             (unless current-input-method
               (activate-input-method "japanese-mozc"))
@@ -415,10 +427,12 @@ This function is added to `post-self-insert-hook'."
                      (not (mozc-modeless--english-text-p text-before-space)))
             ;; Delete the space we just typed
             (delete-char -1)
-            ;; Get romaji info and trigger ambient conversion
+            ;; Get romaji info and apply fence (slash) processing
             (let ((roman-data (mozc-modeless--get-preceding-roman)))
               (when roman-data
-                (mozc-modeless--ambient-convert roman-data nil))))))
+                (setq roman-data (mozc-modeless--apply-fence roman-data))
+                (when roman-data
+                  (mozc-modeless--ambient-convert roman-data nil)))))))
        ;; Punctuation trigger
        ((member (char-to-string last-char) mozc-modeless-ambient-punctuation)
         (let ((punct-char last-char)
@@ -434,10 +448,13 @@ This function is added to `post-self-insert-hook'."
                      (roman-data (mozc-modeless--get-preceding-roman)))
                 (when (and roman-data
                            (not (mozc-modeless--english-text-p text-on-line)))
-                  ;; Conditions met: delete punctuation and convert
-                  (forward-char 1)
-                  (delete-char -1)
-                  (mozc-modeless--ambient-convert roman-data punct-char)))))))))))
+                  ;; Apply fence (slash) processing
+                  (setq roman-data (mozc-modeless--apply-fence roman-data))
+                  (when roman-data
+                    ;; Conditions met: delete punctuation and convert
+                    (forward-char 1)
+                    (delete-char -1)
+                    (mozc-modeless--ambient-convert roman-data punct-char))))))))))))
 
 (defun mozc-modeless--ambient-convert (romaji-info punct-char)
   "Perform ambient conversion on ROMAJI-INFO.
