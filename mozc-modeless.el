@@ -425,14 +425,17 @@ This function is added to `post-self-insert-hook'."
                (particle (mozc-modeless--ends-with-particle-p text-before-space)))
           (when (and particle
                      (not (mozc-modeless--english-text-p text-before-space)))
-            ;; Delete the space we just typed
-            (delete-char -1)
-            ;; Get romaji info and apply fence (slash) processing
-            (let ((roman-data (mozc-modeless--get-preceding-roman)))
-              (when roman-data
-                (setq roman-data (mozc-modeless--apply-fence roman-data))
+            ;; Save undo state before any modifications
+            (undo-boundary)
+            (let ((saved-undo buffer-undo-list))
+              ;; Delete the space we just typed
+              (delete-char -1)
+              ;; Get romaji info and apply fence (slash) processing
+              (let ((roman-data (mozc-modeless--get-preceding-roman)))
                 (when roman-data
-                  (mozc-modeless--ambient-convert roman-data nil)))))))
+                  (setq roman-data (mozc-modeless--apply-fence roman-data))
+                  (when roman-data
+                    (mozc-modeless--ambient-convert roman-data nil saved-undo))))))))
        ;; Punctuation trigger
        ((member (char-to-string last-char) mozc-modeless-ambient-punctuation)
         (let ((punct-char last-char)
@@ -451,15 +454,20 @@ This function is added to `post-self-insert-hook'."
                   ;; Apply fence (slash) processing
                   (setq roman-data (mozc-modeless--apply-fence roman-data))
                   (when roman-data
-                    ;; Conditions met: delete punctuation and convert
-                    (forward-char 1)
-                    (delete-char -1)
-                    (mozc-modeless--ambient-convert roman-data punct-char))))))))))))
+                    ;; Save undo state before any modifications
+                    (undo-boundary)
+                    (let ((saved-undo buffer-undo-list))
+                      ;; Conditions met: delete punctuation and convert
+                      (forward-char 1)
+                      (delete-char -1)
+                      (mozc-modeless--ambient-convert roman-data punct-char saved-undo)))))))))))))
 
-(defun mozc-modeless--ambient-convert (romaji-info punct-char)
+(defun mozc-modeless--ambient-convert (romaji-info punct-char saved-undo-list)
   "Perform ambient conversion on ROMAJI-INFO.
 ROMAJI-INFO is (START . STRING) from `mozc-modeless--get-preceding-roman'.
 PUNCT-CHAR is the punctuation character that triggered conversion, or nil for space trigger.
+SAVED-UNDO-LIST is the `buffer-undo-list' saved before any modifications,
+used to merge all changes into a single undo group.
 When PUNCT-CHAR is non-nil and `mozc-modeless-ambient-punctuation-auto-confirm' is nil,
 the conversion stays in Mozc candidate selection mode (like C-j)."
   (let* ((start (car romaji-info))
@@ -485,6 +493,8 @@ the conversion stays in Mozc candidate selection mode (like C-j)."
                             (mozc-modeless--deactivate-ime)
                             (when punct-char
                               (insert (mozc-modeless--to-fullwidth-punctuation punct-char)))
+                            ;; Merge all undo entries into a single group
+                            (mozc-modeless--merge-undo-entries saved-undo-list)
                             (setq mozc-modeless--ambient-in-progress nil)
                             (remove-hook 'post-command-hook ambient-finish t))))))
               (add-hook 'post-command-hook ambient-finish nil t)))
@@ -505,6 +515,22 @@ the conversion stays in Mozc candidate selection mode (like C-j)."
                            (lambda () mozc-modeless--active))
         ;; Send romaji + punctuation + space (trigger conversion, no auto-confirm)
         (mozc-modeless--insert-string (concat input-string " "))))))
+
+(defun mozc-modeless--merge-undo-entries (saved-undo-list)
+  "Merge all undo entries since SAVED-UNDO-LIST into a single undo group.
+Remove intermediate undo boundaries so that a single undo operation
+reverses all changes made during ambient conversion."
+  (when (listp buffer-undo-list)
+    (let ((result nil)
+          (tail buffer-undo-list))
+      ;; Collect all non-boundary entries added since saved point
+      (while (not (eq tail saved-undo-list))
+        (when (car tail)
+          (push (car tail) result))
+        (setq tail (cdr tail)))
+      ;; Rebuild: boundary + merged entries (no intermediate boundaries) + saved
+      (setq buffer-undo-list
+            (nconc (nreverse result) saved-undo-list)))))
 
 (defun mozc-modeless--to-fullwidth-punctuation (char)
   "Convert ASCII punctuation CHAR to its fullwidth Japanese equivalent."
