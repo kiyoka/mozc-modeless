@@ -11,7 +11,10 @@
       "WebFetch(domain:github.com)",
       "WebSearch",
       "Bash(git checkout:*)",
-      "Bash(~/bin/agent-lisp-paren-aid:*)"
+      "Bash(~/bin/agent-lisp-paren-aid:*)",
+      "Bash(which agent-lisp-paren-aid-linux:*)",
+      "Bash(emacs:*)",
+      "Bash(git stash:*)"
     ],
     "deny": [],
     "ask": []

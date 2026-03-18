@@ -655,4 +655,3 @@ shell-mode: コマンド入力中にアンビエント変換は発動しない
 **依存関係の追加:**
 - `mozc-modeless-english-words.el`を`require`で読み込み (mozc-modeless.el:39)
 
-コミットしてください。
