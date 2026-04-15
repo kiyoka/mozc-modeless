@@ -4,7 +4,7 @@
 
 ;; Author: Kiyoka Nishiyama
 ;; Keywords: i18n, extentions
-;; Version: 0.9.0
+;; Version: 0.10.0
 ;; Package-Requires: ((emacs "29.0") (mozc "0") (markdown-mode "2.0"))
 
 ;; This program is free software; you can redistribute it and/or modify
@@ -66,6 +66,14 @@ automatically triggers Mozc conversion."
 (defcustom mozc-modeless-ambient-punctuation '("." "," "?")
   "List of punctuation characters that trigger ambient conversion."
   :type '(repeat string)
+  :group 'mozc-modeless)
+
+(defcustom mozc-modeless-ambient-punctuation-delay 0.5
+  "Delay in seconds before punctuation-triggered ambient conversion fires.
+If any command is issued during this delay (e.g. the user keeps typing),
+the pending conversion is cancelled.  Set to 0 to convert immediately
+without any delay."
+  :type 'number
   :group 'mozc-modeless)
 
 (defcustom mozc-modeless-ambient-punctuation-auto-confirm t
@@ -407,6 +415,60 @@ so isolated particles are not triggered."
 (defvar mozc-modeless--ambient-in-progress nil
   "Non-nil when ambient conversion is in progress.")
 
+(defvar mozc-modeless--ambient-punctuation-timer nil
+  "Pending timer for punctuation-triggered ambient conversion, or nil.")
+
+(defun mozc-modeless--cancel-ambient-punctuation-timer ()
+  "Cancel the pending ambient punctuation timer, if any."
+  (when (timerp mozc-modeless--ambient-punctuation-timer)
+    (cancel-timer mozc-modeless--ambient-punctuation-timer))
+  (setq mozc-modeless--ambient-punctuation-timer nil)
+  (remove-hook 'pre-command-hook
+               #'mozc-modeless--ambient-punctuation-pre-command t))
+
+(defun mozc-modeless--ambient-punctuation-pre-command ()
+  "Cancel the pending ambient punctuation timer when any command runs."
+  (mozc-modeless--cancel-ambient-punctuation-timer))
+
+(defun mozc-modeless--ambient-punctuation-timer-fire (buffer pos punct-char)
+  "Fire ambient punctuation conversion for PUNCT-CHAR in BUFFER at POS.
+Runs only if the buffer, point, and character at point-1 are unchanged."
+  (setq mozc-modeless--ambient-punctuation-timer nil)
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (remove-hook 'pre-command-hook
+                   #'mozc-modeless--ambient-punctuation-pre-command t)
+      (when (and (eq buffer (current-buffer))
+                 (= (point) pos)
+                 (eq (char-before) punct-char)
+                 mozc-modeless-ambient-enable
+                 (not mozc-modeless--active)
+                 (not mozc-modeless--ambient-in-progress)
+                 (not (mozc-modeless--ambient-excluded-p)))
+        (mozc-modeless--run-ambient-punctuation-conversion punct-char)))))
+
+(defun mozc-modeless--run-ambient-punctuation-conversion (punct-char)
+  "Run punctuation-triggered ambient conversion for PUNCT-CHAR.
+Assumes PUNCT-CHAR has just been inserted so `char-before' is PUNCT-CHAR."
+  (let ((char-before-punct (char-before (1- (point)))))
+    ;; Skip if preceding character is a digit (e.g., "0.1" decimals, "$1,000" amounts)
+    (unless (and char-before-punct
+                 (>= char-before-punct ?0)
+                 (<= char-before-punct ?9))
+      (save-excursion
+        (backward-char 1)
+        (let* ((text-on-line (mozc-modeless--get-preceding-text-on-line))
+               (roman-data (mozc-modeless--get-preceding-roman)))
+          (when (and roman-data
+                     (not (mozc-modeless--english-text-p text-on-line)))
+            (setq roman-data (mozc-modeless--apply-fence roman-data))
+            (when roman-data
+              (undo-boundary)
+              (let ((saved-undo buffer-undo-list))
+                (forward-char 1)
+                (delete-char -1)
+                (mozc-modeless--ambient-convert roman-data punct-char saved-undo)))))))))
+
 (defun mozc-modeless--check-ambient-trigger ()
   "Check if the last inserted character should trigger ambient conversion.
 This function is added to `post-self-insert-hook'."
@@ -438,29 +500,20 @@ This function is added to `post-self-insert-hook'."
                     (mozc-modeless--ambient-convert roman-data nil saved-undo))))))))
        ;; Punctuation trigger
        ((member (char-to-string last-char) mozc-modeless-ambient-punctuation)
-        (let ((punct-char last-char)
-              (char-before-punct (char-before (1- (point)))))
-          ;; Skip if preceding character is a digit (e.g., "0.1" decimals, "$1,000" amounts)
-          (unless (and char-before-punct
-                       (>= char-before-punct ?0)
-                       (<= char-before-punct ?9))
-            ;; Check conditions before deleting punctuation
-            (save-excursion
-              (backward-char 1)
-              (let* ((text-on-line (mozc-modeless--get-preceding-text-on-line))
-                     (roman-data (mozc-modeless--get-preceding-roman)))
-                (when (and roman-data
-                           (not (mozc-modeless--english-text-p text-on-line)))
-                  ;; Apply fence (slash) processing
-                  (setq roman-data (mozc-modeless--apply-fence roman-data))
-                  (when roman-data
-                    ;; Save undo state before any modifications
-                    (undo-boundary)
-                    (let ((saved-undo buffer-undo-list))
-                      ;; Conditions met: delete punctuation and convert
-                      (forward-char 1)
-                      (delete-char -1)
-                      (mozc-modeless--ambient-convert roman-data punct-char saved-undo)))))))))))))
+        (if (and (numberp mozc-modeless-ambient-punctuation-delay)
+                 (> mozc-modeless-ambient-punctuation-delay 0))
+            ;; Defer: schedule a timer; any subsequent command cancels it.
+            (progn
+              (mozc-modeless--cancel-ambient-punctuation-timer)
+              (add-hook 'pre-command-hook
+                        #'mozc-modeless--ambient-punctuation-pre-command nil t)
+              (setq mozc-modeless--ambient-punctuation-timer
+                    (run-with-timer
+                     mozc-modeless-ambient-punctuation-delay nil
+                     #'mozc-modeless--ambient-punctuation-timer-fire
+                     (current-buffer) (point) last-char)))
+          ;; Immediate: fire conversion now.
+          (mozc-modeless--run-ambient-punctuation-conversion last-char)))))))
 
 (defun mozc-modeless--ambient-convert (romaji-info punct-char saved-undo-list)
   "Perform ambient conversion on ROMAJI-INFO.
@@ -592,6 +645,7 @@ Key bindings:
     ;; Disable mode
     (mozc-modeless--restore-mozc-keymap)
     (remove-hook 'post-self-insert-hook #'mozc-modeless--check-ambient-trigger t)
+    (mozc-modeless--cancel-ambient-punctuation-timer)
     (when mozc-modeless--active
       (mozc-modeless--finish))))
 
